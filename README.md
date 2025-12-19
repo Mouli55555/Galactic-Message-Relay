@@ -54,6 +54,20 @@ RabbitMQ (DLQ)
 
 * Docker
 * Docker Compose
+  Verify:
+
+```bash
+docker --version
+docker compose version
+```
+
+##Pull Infrastructure Images (IMPORTANT)
+
+Explicitly pull Redis and RabbitMQ before composing:
+```bash
+docker pull rabbitmq:3-management
+docker pull redis:7
+```
 
 ### 2️⃣ Start all services
 
