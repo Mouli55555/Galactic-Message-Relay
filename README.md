@@ -1,85 +1,252 @@
-Resilient Message Processing System
+# 🚀 Galactic Message Relay – Resilient Message Processing System
 
-This project implements a fault-tolerant message-driven service using Spring Boot, RabbitMQ, and Redis. It demonstrates core distributed-system patterns to ensure exactly-once message processing, even in the presence of failures or duplicate deliveries.
+A production-style **resilient asynchronous message processing system** built using **Spring Boot, RabbitMQ, Redis, and Docker**.
+This project demonstrates **idempotency, retries, poison (dead-letter) queues, failure simulation, and monitoring**, inspired by real-world distributed systems.
 
-🚀 Features
+---
 
-Exactly-once processing using Redis-based idempotency
+## 🧩 Architecture Overview
 
-Automatic retries for transient failures
+```
+Client
+  │
+  ▼
+Producer Service (HTTP API)
+  │
+  ▼
+RabbitMQ (Primary Queue)
+  │
+  ▼
+Consumer Worker
+  │   ├── Redis (Idempotency / State Store)
+  │   ├── Retry Logic (max 3 retries)
+  │   └── Poison Queue (DLQ)
+  ▼
+RabbitMQ (DLQ)
+```
 
-Dead-Letter Queue (DLQ) for poison messages
+### Services
 
-Manual acknowledgements for precise message control
+| Service          | Description                                             | Port            |
+| ---------------- | ------------------------------------------------------- | --------------- |
+| Producer Service | Accepts messages via REST API and publishes to RabbitMQ | `8080`          |
+| Consumer Service | Processes messages with retries & idempotency           | `8081`          |
+| RabbitMQ         | Message broker + management UI                          | `5672`, `15672` |
+| Redis            | State store for idempotency                             | `6379`          |
 
-Fault isolation and recovery
+---
 
-🛠 Tech Stack
+## ✨ Features Implemented
 
-Java 17
+✔ Exactly-once processing using Redis-based idempotency
+✔ Manual acknowledgements (ACK)
+✔ Retry mechanism (3 attempts)
+✔ Poison / Dead-Letter Queue for failed messages
+✔ Simulated failures (~30%) to test resilience
+✔ Monitoring endpoint (`/status`)
+✔ Fully Dockerized setup (one command run)
 
-Spring Boot
+---
 
-RabbitMQ
+## 🐳 Run the Project (Docker – Recommended)
 
-Redis
+### 1️⃣ Prerequisites
 
-Docker & Docker Compose
+* Docker
+* Docker Compose
 
-🧠 How It Works
+### 2️⃣ Start all services
 
-A command message is published to RabbitMQ
+```bash
+docker compose up -d --build
+```
 
-The consumer first claims the message ID in Redis
+### 3️⃣ Verify running containers
 
-If already processed, the message is ignored
-
-On failure, the message is retried with a retry counter
-
-After max retries, the message is sent to the DLQ
-
-Successful messages are acknowledged and marked as processed
-
-▶️ Running the Project
-Start infrastructure
-docker-compose up -d
-
-Verify services
+```bash
 docker ps
+```
 
-Check Redis
-docker exec -it redis redis-cli ping
+---
 
-Check RabbitMQ
+## 🔧 Access Services
 
-Management UI: http://localhost:15672
+### RabbitMQ Management UI
 
-Username: guest
+```
+http://localhost:15672
+username: guest
+password: guest
+```
 
-Password: guest
+### Consumer Status API
 
-🧪 Testing Scenarios
+```
+GET http://localhost:8081/status
+```
 
-Send duplicate messages → processed only once
+Response example:
 
-Simulate failure → automatic retry
+```json
+{
+  "primaryQueue": 0,
+  "poisonQueue": 1
+}
+```
 
-Exceed retry limit → message moves to DLQ
+---
 
-📂 Project Structure
-producer-service/
-consumer-service/
-  ├── listener/
-  ├── service/
-  ├── config/
-docker-compose.yml
+## 📡 Producer API (Message Ingestion)
 
-🎯 Learning Outcomes
+### Endpoint
 
-Build resilient consumers
+```
+POST /command
+```
 
-Handle retries and poison messages safely
+### Sample Request
 
-Apply idempotency in distributed systems
+```json
+{
+  "messageId": "cmd-101",
+  "payload": {
+    "orderId": 123,
+    "action": "DEPLOY"
+  },
+  "createdAt": "2025-01-01T10:00:00Z"
+}
+```
 
-Design production-ready messaging flows
+### Expected Response
+
+```json
+{
+  "status": "QUEUED",
+  "messageId": "cmd-101"
+}
+```
+
+---
+
+## 🔄 Consumer Processing Flow
+
+1. Consumer listens to **primary queue**
+2. Attempts to **claim messageId in Redis**
+3. If duplicate → ACK & ignore
+4. Simulates processing (30% failure)
+5. On failure:
+
+   * Retry up to **3 times**
+   * Preserve headers (`x-retries`)
+6. After retries exhausted → move to **Poison Queue**
+7. On success → store `messageId` in Redis → ACK
+
+---
+
+## ☠️ Testing Failure & Poison Queue
+
+### Option A – Natural Failure (30%)
+
+Send multiple messages; some will fail automatically.
+
+### Option B – Forced Failure (Recommended)
+
+Temporarily modify `ProcessingService`:
+
+```java
+throw new SimulatedProcessingException(message.getMessageId());
+```
+
+Rebuild & restart:
+
+```bash
+docker compose up -d --build consumer-service
+```
+
+### Observe logs
+
+```bash
+docker logs -f consumer-service
+```
+
+Expected:
+
+```
+[RETRYING attempt=1]
+[RETRYING attempt=2]
+[RETRYING attempt=3]
+[MOVED_TO_DLQ]
+```
+
+---
+
+## 🧪 Verify Poison Queue
+
+### Using RabbitMQ UI
+
+1. Go to **Queues**
+2. Open `command.dlq`
+3. Click **Get Messages**
+
+Headers visible:
+
+* `x-retries`
+* `x-error-reason`
+* `x-original-queue`
+
+---
+
+## 🔁 Idempotency Test
+
+Send the **same messageId again**:
+
+```json
+{
+  "messageId": "cmd-101",
+  "payload": {"orderId": 123}
+}
+```
+
+Consumer log:
+
+```
+[DUPLICATE_ALREADY_PROCESSED]
+```
+
+✔ Message ignored
+✔ No reprocessing
+
+---
+
+## 🛠️ Tech Stack
+
+* **Java 21**
+* **Spring Boot**
+* **RabbitMQ**
+* **Redis**
+* **Docker & Docker Compose**
+
+---
+
+## 🎯 Why This Project Matters
+
+This system demonstrates **real-world distributed system patterns**:
+
+* Idempotent consumers
+* Fault tolerance
+* Backpressure control
+* Dead-letter queues
+* Stateless microservices
+
+Ideal for **backend interviews**, **system design discussions**, and **production-grade learning**.
+
+---
+
+## 👤 Author
+
+**Chandra Naga Mouli**
+Backend / Distributed Systems Enthusiast
+
+---
+
+⭐ If you found this useful, consider starring the repo!
