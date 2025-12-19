@@ -18,9 +18,8 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Component;
 
+import java.util.HashMap;
 import java.util.Map;
-
-
 
 @Component
 public class CommandListener {
@@ -41,7 +40,6 @@ public class CommandListener {
     private static final Logger log =
             LoggerFactory.getLogger(CommandListener.class);
 
-
     @RabbitListener(queues = RabbitMQConfig.COMMAND_QUEUE,
             containerFactory = "rabbitListenerContainerFactory")
     public void consume(CommandMessage message,
@@ -52,21 +50,29 @@ public class CommandListener {
         String id = message.getMessageId();
         log.info("[RECEIVED] messageId={}", id);
 
-        // atomic "claim" to avoid race (see IdempotencyService improvement below)
-        if (!idempotency.claimProcessing(id)) {
-            log.info("[DUPLICATE_IGNORED] messageId={}", id);
-            channel.basicAck(tag, false);
-            return;
+        // Claim with a token. If we couldn't claim, check if already processed; otherwise ignore duplicate.
+        String claimToken = idempotency.claimProcessing(id);
+        if (claimToken == null) {
+            if (idempotency.isProcessed(id)) {
+                log.info("[DUPLICATE_ALREADY_PROCESSED] messageId={}", id);
+                channel.basicAck(tag, false);
+                return;
+            } else {
+                // Another consumer is processing or claim expired — avoid concurrent processing
+                log.info("[DUPLICATE_IGNORED] messageId={}", id);
+                channel.basicAck(tag, false);
+                return;
+            }
         }
 
         try {
             processor.process(message);
-            idempotency.markProcessed(id); // final mark
+            // mark processed BEFORE ack (requirement)
+            idempotency.markProcessed(id);
             channel.basicAck(tag, false);
             log.info("[PROCESSED_SUCCESSFULLY] messageId={}", id);
 
         } catch (SimulatedProcessingException ex) {
-            // read attempts header and republish or move to DLQ
             MessageProperties props = amqpMessage.getMessageProperties();
             Map<String, Object> headers = props.getHeaders();
             Integer attempts = (headers != null && headers.get("x-retries") instanceof Integer)
@@ -76,41 +82,75 @@ public class CommandListener {
             if (attempts <= MAX_RETRIES) {
                 log.warn("[RETRYING attempt={} messageId={}]", attempts, id);
 
+                // release claim so a retried message can be claimed again
+                idempotency.releaseClaim(id, claimToken);
+
+                // build new properties preserving original headers/type info
                 MessageProperties newProps = new MessageProperties();
+                // copy headers safely
+                if (props.getHeaders() != null) {
+                    newProps.getHeaders().putAll(new HashMap<>(props.getHeaders()));
+                }
                 newProps.setContentType(props.getContentType());
                 newProps.setHeader("x-retries", attempts);
-                // copy other important headers if needed
 
                 org.springframework.amqp.core.Message newMsg =
                         MessageBuilder.withBody(amqpMessage.getBody())
                                 .andProperties(newProps)
                                 .build();
 
-                // republish to primary queue (immediate retry)
-                rabbitTemplate.send(RabbitMQConfig.COMMAND_QUEUE, newMsg);
+                // republish to primary queue via default exchange (route by queue name)
+                rabbitTemplate.send("", RabbitMQConfig.COMMAND_QUEUE, newMsg);
 
-                // ack the current delivery so it won't be redelivered by the broker
+                // ack current so broker won't redeliver this instance
                 channel.basicAck(tag, false);
             } else {
                 log.error("[MOVED_TO_DLQ] messageId={} after {} attempts", id, attempts);
-                // send to DLQ
+
+                // release claim before moving to DLQ
+                idempotency.releaseClaim(id, claimToken);
+
+                // send to DLQ, preserving headers and adding metadata
                 MessageProperties newProps = new MessageProperties();
+                if (props.getHeaders() != null) {
+                    newProps.getHeaders().putAll(new HashMap<>(props.getHeaders()));
+                }
                 newProps.setContentType(props.getContentType());
                 newProps.setHeader("x-retries", attempts);
+                newProps.setHeader("x-error-reason", ex.getMessage());
+                newProps.setHeader("x-original-queue", RabbitMQConfig.COMMAND_QUEUE);
 
                 org.springframework.amqp.core.Message newMsg =
                         MessageBuilder.withBody(amqpMessage.getBody())
                                 .andProperties(newProps)
                                 .build();
 
-                rabbitTemplate.send(RabbitMQConfig.DLQ_QUEUE, newMsg);
+                rabbitTemplate.send("", RabbitMQConfig.DLQ_QUEUE, newMsg);
                 channel.basicAck(tag, false);
             }
 
         } catch (Exception ex) {
             log.error("[UNEXPECTED_FAILURE_MOVED_TO_DLQ] messageId={}", id, ex);
-            // move immediately to DLQ
-            rabbitTemplate.send(RabbitMQConfig.DLQ_QUEUE, amqpMessage);
+
+            // release claim before moving to DLQ
+            idempotency.releaseClaim(id, claimToken);
+
+            // move immediately to DLQ (preserve original message)
+            MessageProperties props = amqpMessage.getMessageProperties();
+            MessageProperties newProps = new MessageProperties();
+            if (props.getHeaders() != null) {
+                newProps.getHeaders().putAll(new HashMap<>(props.getHeaders()));
+            }
+            newProps.setContentType(props.getContentType());
+            newProps.setHeader("x-error-reason", ex.getMessage());
+            newProps.setHeader("x-original-queue", RabbitMQConfig.COMMAND_QUEUE);
+
+            org.springframework.amqp.core.Message newMsg =
+                    MessageBuilder.withBody(amqpMessage.getBody())
+                            .andProperties(newProps)
+                            .build();
+
+            rabbitTemplate.send("", RabbitMQConfig.DLQ_QUEUE, newMsg);
             channel.basicAck(tag, false);
         }
     }

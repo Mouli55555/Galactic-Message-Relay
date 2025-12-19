@@ -20,7 +20,7 @@ public class RabbitListenerErrorHandler extends ConditionalRejectingErrorHandler
 
             if (cause instanceof SimulatedProcessingException) {
                 log.info("[INTENTIONAL_FAILURE] {}", cause.getMessage());
-                return; // suppress WARN
+                return; // suppress WARN for intentional failures
             }
         }
         log.error("[UNEXPECTED_RABBIT_ERROR]", t);

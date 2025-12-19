@@ -8,8 +8,6 @@ import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
-import java.time.Duration;
-
 @Configuration
 public class RedisConfig {
 
@@ -20,9 +18,9 @@ public class RedisConfig {
         RedisStandaloneConfiguration cfg = new RedisStandaloneConfiguration(host, port);
         return new LettuceConnectionFactory(cfg);
     }
+
     @Bean
-    public StringRedisTemplate redisTemplate(
-            RedisConnectionFactory factory) {
+    public StringRedisTemplate redisTemplate(RedisConnectionFactory factory) {
         return new StringRedisTemplate(factory);
     }
 }

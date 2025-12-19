@@ -4,12 +4,11 @@ import org.springframework.amqp.core.*;
 import java.util.HashMap;
 import java.util.Map;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.amqp.core.AcknowledgeMode;
+
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.support.converter.DefaultJackson2JavaTypeMapper;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
-import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -27,7 +26,7 @@ public class RabbitMQConfig {
         classMapper.setTrustedPackages("com.mouli.consumer.dto");
         classMapper.setTypePrecedence(DefaultJackson2JavaTypeMapper.TypePrecedence.INFERRED);
 
-        converter.setJavaTypeMapper(classMapper); // for Jackson2JsonMessageConverter use setJavaTypeMapper
+        converter.setJavaTypeMapper(classMapper);
         return converter;
     }
 
@@ -41,12 +40,10 @@ public class RabbitMQConfig {
         factory.setMessageConverter(converter);
         factory.setAcknowledgeMode(AcknowledgeMode.MANUAL);
         factory.setDefaultRequeueRejected(false);
-
-        // make prefetch explicit (matches your application.yml intent)
         factory.setPrefetchCount(1);
-
         return factory;
     }
+
     @Bean
     public Queue dlqQueue() {
         return QueueBuilder.durable(DLQ_QUEUE).build();
@@ -55,10 +52,22 @@ public class RabbitMQConfig {
     @Bean
     public Queue commandQueue() {
         Map<String, Object> args = new HashMap<>();
-        // when we explicitly route to the DLQ queue we can publish there,
-        // but also useful to have a dead-letter routing if you ever nack with requeue=false
-        args.put("x-dead-letter-exchange", ""); // default exchange
+        args.put("x-dead-letter-exchange", "");
         args.put("x-dead-letter-routing-key", DLQ_QUEUE);
         return QueueBuilder.durable(COMMAND_QUEUE).withArguments(args).build();
     }
+
+    @Bean
+    public DirectExchange commandExchange() {
+        return new DirectExchange("command.exchange");
+    }
+
+    @Bean
+    public Binding commandBinding() {
+        return BindingBuilder
+                .bind(commandQueue())
+                .to(commandExchange())
+                .with("command.key");
+    }
+
 }
