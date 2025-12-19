@@ -101,7 +101,7 @@ Response example:
 ### Endpoint
 
 ```
-POST /command
+POST http://localhost:8080/command
 ```
 
 ### Sample Request
